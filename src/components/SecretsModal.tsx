@@ -502,8 +502,8 @@ export const SecretsModal: React.FC<SecretsModalProps> = ({ isOpen, onClose, onK
                         : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
                     }`}
                   >
-                    {testResult.success ? <CheckCircle className="w-3.5 h-3.5 flex-shrink-0" /> : <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />}
-                    <span className="break-all">{testResult.message}</span>
+                    {testResult.success ? <CheckCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" /> : <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />}
+                    <span className="break-words min-w-0 leading-relaxed">{testResult.message}</span>
                   </div>
                 )}
 
@@ -760,16 +760,24 @@ export const SecretsModal: React.FC<SecretsModalProps> = ({ isOpen, onClose, onK
                         <option value="builder">Builder</option>
                         <option value="fast">Fast</option>
                       </select>
-
-                      {testResult?.id === k.id && (
-                        <span className={`text-[10px] flex items-center gap-1 ${
-                          testResult.success ? 'text-emerald-400' : 'text-rose-400'
-                        }`}>
-                          {testResult.success ? <CheckCircle className="w-3 h-3" /> : <AlertCircle className="w-3 h-3" />}
-                          <span className="truncate max-w-[220px]" title={testResult.message}>{testResult.message}</span>
-                        </span>
-                      )}
                     </div>
+
+                    {testResult?.id === k.id && (
+                      <div
+                        className={`ml-7 p-2 rounded-lg border text-[11px] leading-relaxed flex items-start gap-1.5 ${
+                          testResult.success
+                            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                            : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                        }`}
+                      >
+                        {testResult.success ? (
+                          <CheckCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                        ) : (
+                          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                        )}
+                        <span className="break-words min-w-0">{testResult.message}</span>
+                      </div>
+                    )}
                   </div>
                 );
               })

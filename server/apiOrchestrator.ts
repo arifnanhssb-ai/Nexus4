@@ -433,8 +433,22 @@ export async function fetchHuggingFaceWithFallback(options: {
     total: number;
   }) => void;
 }): Promise<{ response: globalThis.Response; model: string; data: any }> {
-  const chain = getHuggingFaceModelChain(options.preferredModel);
+  const baseChain = getHuggingFaceModelChain(options.preferredModel);
+  const preferredBase = (baseChain[0] || 'Qwen/Qwen2.5-Coder-32B-Instruct').replace(/:.+$/, '');
+  const cheapestCandidates = [
+    `${preferredBase}:cheapest`,
+    'Qwen/Qwen2.5-Coder-32B-Instruct:cheapest',
+    'Qwen/Qwen2.5-7B-Instruct:cheapest',
+  ];
+  const chain: string[] = [];
+  for (const m of [...baseChain, ...cheapestCandidates]) {
+    if (m && !chain.includes(m)) chain.push(m);
+  }
   const errors: Array<{ model: string; status: number; message: string }> = [];
+  let payment402Count = 0;
+
+  const formatHf402Message = (raw: string) =>
+    `Hugging Face Router (402): এই HF অ্যাকাউন্টে Inference Providers ক্রেডিট নেই বা ফ্রি লিমিট ($0.10/মাস) চালু/বাকি নেই (${raw})। HF API আগে ব্যবহার না করলেও ফ্রি অ্যাকাউন্টে $0.10 লিমিট বা বড় মডেলে পেইড/PRO বিলিং ছাড়া এই 402 আসে — সম্পূর্ণ ফ্রিতে চালাতে OpenRouter (:free), Groq বা Cerebras ব্যবহার করুন।`;
 
   for (let idx = 0; idx < chain.length; idx++) {
     const candidateModel = chain[idx];
@@ -480,7 +494,25 @@ export async function fetchHuggingFaceWithFallback(options: {
       }
 
       if (status === 402 || /exceeded.*monthly.*credits|payment required/i.test(rawMsg)) {
-        const creditErr = new Error(`Hugging Face মাসিক ফ্রি ক্রেডিট শেষ হয়েছে (402): ${rawMsg}`);
+        payment402Count++;
+        errors.push({ model: candidateModel, status: 402, message: rawMsg });
+
+        if (payment402Count === 1) {
+          const cheapestIdx = chain.findIndex((m, j) => j > idx && (m.endsWith(':cheapest') || /Qwen2\.5-7B|Qwen2\.5-Coder-32B/i.test(m)));
+          if (cheapestIdx > idx) {
+            options.onFallback?.({
+              failedModel: candidateModel,
+              nextModel: chain[cheapestIdx],
+              reason: `402 on ${candidateModel}: ${rawMsg}`,
+              attempt: idx + 1,
+              total: chain.length,
+            });
+            idx = cheapestIdx - 1;
+            continue;
+          }
+        }
+
+        const creditErr = new Error(formatHf402Message(rawMsg));
         (creditErr as any).status = 402;
         throw creditErr;
       }
@@ -645,13 +677,13 @@ export async function fetchLiveProviderModels(
     ],
     huggingface: [
       { id: 'Qwen/Qwen2.5-Coder-32B-Instruct', label: 'Qwen 2.5 Coder 32B Instruct', badge: 'Primary · Coding' },
-      { id: 'deepseek-ai/DeepSeek-V3-0324', label: 'DeepSeek V3 0324 (HF Free Router)', badge: 'Fallback 2 · V3' },
-      { id: 'deepseek-ai/DeepSeek-R1', label: 'DeepSeek R1 (HF Free Router)', badge: 'Fallback 3 · Reasoning' },
-      { id: 'meta-llama/Llama-3.3-70B-Instruct', label: 'Llama 3.3 70B Instruct', badge: 'Fallback 4 · 70B' },
-      { id: 'Qwen/Qwen2.5-72B-Instruct', label: 'Qwen 2.5 72B Instruct', badge: 'Free · 72B' },
-      { id: 'Qwen/Qwen3-Coder-30B-A3B-Instruct', label: 'Qwen3 Coder 30B', badge: 'Free · Coding' },
-      { id: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B (HF Router)', badge: 'Free · 120B' },
-      { id: 'Qwen/Qwen2.5-7B-Instruct', label: 'Qwen 2.5 7B Instruct', badge: 'Free · Fast' },
+      { id: 'deepseek-ai/DeepSeek-V3-0324', label: 'DeepSeek V3 0324 (HF Router)', badge: 'Fallback 2 · V3' },
+      { id: 'deepseek-ai/DeepSeek-R1', label: 'DeepSeek R1 (HF Router)', badge: 'Fallback 3 · Reasoning' },
+      { id: 'meta-llama/Llama-3.3-70B-Instruct', label: 'Llama 3.3 70B Instruct', badge: 'HF Router · 70B' },
+      { id: 'Qwen/Qwen2.5-72B-Instruct', label: 'Qwen 2.5 72B Instruct', badge: 'HF Router · 72B' },
+      { id: 'Qwen/Qwen3-Coder-30B-A3B-Instruct', label: 'Qwen3 Coder 30B', badge: 'HF Router · Coding' },
+      { id: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B (HF Router)', badge: 'HF Router · 120B' },
+      { id: 'Qwen/Qwen2.5-7B-Instruct', label: 'Qwen 2.5 7B Instruct', badge: 'HF Router · Fast' },
     ],
     deepseek: [
       { id: 'deepseek-chat', label: 'DeepSeek Chat (V3)', badge: 'Coding · Tool Calling' },
@@ -2945,6 +2977,7 @@ async function streamOpenAICompatible(
     let emittedReasoningStep = false;
     const toolCallsMap = new Map<number, { id: string; type: 'function'; function: { name: string; arguments: string } }>();
     const routerModelErrors: Array<{ model: string; status: number; message: string }> = [];
+    let hfPayment402Count = 0;
     let roundSucceeded = false;
     const roundLockKeyId = activeKeyObj?.id;
     acquireKeyInFlight(roundLockKeyId);
@@ -3041,9 +3074,22 @@ async function streamOpenAICompatible(
           throw authErr;
         }
 
-        // Account credits depleted (402) affects the key across all models — fail fast so another key can take over
+        // Account credits depleted (402) affects the key across all models — for Hugging Face, allow 1 lightweight fallback in case only the heavy partner model hit 402
         if (res.status === 402 || /insufficient balance|exceeded.*monthly.*credits/i.test(msg)) {
-          const creditErr = new Error(msg);
+          if (routerProvider === 'huggingface' && hfPayment402Count === 0 && modelIdx < roundModelChain.length - 1) {
+            hfPayment402Count++;
+            routerModelErrors.push({ model: candidateModel, status: 402, message: msg });
+            sendEvent({
+              type: 'action',
+              action: `⚡ HF ${candidateModel} returned 402 — trying lighter model (${roundModelChain[modelIdx + 1]})...`,
+            });
+            continue;
+          }
+          const formattedMsg =
+            routerProvider === 'huggingface'
+              ? `Hugging Face Router (402): এই HF অ্যাকাউন্টে Inference Providers ক্রেডিট নেই বা ফ্রি লিমিট ($0.10/মাস) চালু/বাকি নেই (${msg})`
+              : msg;
+          const creditErr = new Error(formattedMsg);
           (creditErr as any).status = 402;
           throw creditErr;
         }
@@ -3160,7 +3206,16 @@ The server will execute it immediately and send back the result so you can conti
           }
 
           if (finalStatus === 402 || /insufficient balance|exceeded.*monthly.*credits/i.test(finalErrMsg)) {
-            const creditErr = new Error(finalErrMsg);
+            if (routerProvider === 'huggingface' && hfPayment402Count === 0 && modelIdx < roundModelChain.length - 1) {
+              hfPayment402Count++;
+              routerModelErrors.push({ model: candidateModel, status: 402, message: finalErrMsg });
+              continue;
+            }
+            const formattedMsg =
+              routerProvider === 'huggingface'
+                ? `Hugging Face Router (402): এই HF অ্যাকাউন্টে Inference Providers ক্রেডিট নেই বা ফ্রি লিমিট ($0.10/মাস) চালু/বাকি নেই (${finalErrMsg})`
+                : finalErrMsg;
+            const creditErr = new Error(formattedMsg);
             (creditErr as any).status = 402;
             throw creditErr;
           }

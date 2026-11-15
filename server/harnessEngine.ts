@@ -571,9 +571,9 @@ Reply in strict JSON ONLY: {"passed": true|false, "issues": ["specific actionabl
       const fallbackChain = isHf
         ? [
             ...(criticKey.model ? [criticKey.model] : []),
-            'Qwen/Qwen2.5-Coder-32B-Instruct',
-            'deepseek-ai/DeepSeek-V3-0324',
-            'meta-llama/Llama-3.3-70B-Instruct',
+            'deepseek-ai/DeepSeek-V4-Flash:cheapest',
+            'Qwen/Qwen3-32B:cheapest',
+            'Qwen/Qwen3.5-9B:cheapest',
           ].filter((m, idx, arr) => Boolean(m) && arr.indexOf(m) === idx)
         : [
             'cohere/north-mini-code:free',

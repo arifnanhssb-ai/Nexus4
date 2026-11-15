@@ -52,18 +52,18 @@ export const PROVIDER_CATALOG: ProviderPresetInfo[] = [
   },
   {
     id: 'huggingface',
-    label: 'Hugging Face Router ($0.10/mo Free Trial)',
-    freeTierNote: 'HF টোকেন (hf_...) — ফ্রি অ্যাকাউন্টে মাসে সর্বোচ্চ ~$0.10 ফ্রি ক্রেডিট দেয় (বড় মডেল বা ক্রেডিট ছাড়া অ্যাকাউন্টে 402 দেখাতে পারে); সীমাহীন ফ্রির জন্য OpenRouter (:free), Groq বা Cerebras সেরা। huggingface.co/settings/tokens-এ Inference Providers পারমিশন অন রাখুন।',
+    label: 'Hugging Face Router (:cheapest · Credits/PRO Required)',
+    freeTierNote: 'গুরুত্বপূর্ণ: Hugging Face আনলিমিটেড ফ্রি chat API বন্ধ করেছে — Router-এ কোনো $0 ফ্রি মডেল নেই (ফ্রি অ্যাকাউন্টে ক্রেডিট/PRO বা HF BYOK না থাকলে 402 আসে)। নিচে সবচেয়ে সস্তা `:cheapest` মডেল ($0.05–$0.28/1M) সেট করা আছে; একদম $0 ফ্রিতে চালাতে OpenRouter (:free), Groq বা Cerebras ব্যবহার করুন।',
     keyPlaceholder: 'hf_...',
     models: [
-      { id: 'Qwen/Qwen2.5-Coder-32B-Instruct', label: 'Qwen 2.5 Coder 32B Instruct', badge: 'Primary · Coding' },
-      { id: 'deepseek-ai/DeepSeek-V3-0324', label: 'DeepSeek V3 0324 (HF Router)', badge: 'Fallback 2 · V3' },
-      { id: 'deepseek-ai/DeepSeek-R1', label: 'DeepSeek R1 (HF Router)', badge: 'Fallback 3 · Reasoning' },
-      { id: 'meta-llama/Llama-3.3-70B-Instruct', label: 'Llama 3.3 70B Instruct', badge: 'HF Router · 70B' },
-      { id: 'Qwen/Qwen2.5-72B-Instruct', label: 'Qwen 2.5 72B Instruct', badge: 'HF Router · 72B' },
-      { id: 'Qwen/Qwen3-Coder-30B-A3B-Instruct', label: 'Qwen3 Coder 30B', badge: 'HF Router · Coding' },
-      { id: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B (HF Router)', badge: 'HF Router · 120B' },
-      { id: 'Qwen/Qwen2.5-7B-Instruct', label: 'Qwen 2.5 7B Instruct', badge: 'HF Router · Fast' },
+      { id: 'deepseek-ai/DeepSeek-V4-Flash:cheapest', label: 'DeepSeek V4 Flash (:cheapest)', badge: 'Primary · $0.18/1M' },
+      { id: 'Qwen/Qwen3-32B:cheapest', label: 'Qwen 3 32B (:cheapest)', badge: 'Coding · $0.28/1M' },
+      { id: 'Qwen/Qwen3.5-9B:cheapest', label: 'Qwen 3.5 9B (:cheapest)', badge: 'Light · $0.15/1M' },
+      { id: 'openai/gpt-oss-20b:cheapest', label: 'GPT-OSS 20B (:cheapest)', badge: 'Fast · $0.14/1M' },
+      { id: 'google/gemma-3-27b-it:cheapest', label: 'Gemma 3 27B IT (:cheapest)', badge: '27B · $0.16/1M' },
+      { id: 'meta-llama/Llama-3.1-8B-Instruct:cheapest', label: 'Llama 3.1 8B Instruct (:cheapest)', badge: 'Cheapest · $0.05/1M' },
+      { id: 'zai-org/GLM-4.7-Flash:cheapest', label: 'GLM 4.7 Flash (:cheapest)', badge: 'Flash · $0.40/1M' },
+      { id: 'meta-llama/Llama-3.3-70B-Instruct:cheapest', label: 'Llama 3.3 70B Instruct (:cheapest)', badge: '70B · $0.40/1M' },
     ],
   },
   {
@@ -181,17 +181,30 @@ export function inferKeyRoleTier(model: string, explicit?: KeyRoleTier): Exclude
   if (/(pro|hydrogen|argon|carbon|deepseek-r1|deepseek-reasoner|deepseek-v3|qwen3-coder|qwen2\.5-coder-32b|qwen2\.5-72b|480b|120b|70b|devstral|deepseek-chat|grok-3)/i.test(m)) {
     return 'architect';
   }
-  if (/(flash-lite|8b|7b|instant|nemotron|flint|openrouter\/free|small-latest|small-3\.1)/i.test(m)) {
+  if (/(flash-lite|8b|7b|9b|20b|instant|nemotron|flint|openrouter\/free|small-latest|small-3\.1)/i.test(m)) {
     return 'fast';
   }
   return 'builder';
 }
 
+const HF_REMOVED_MODEL_MAP: Record<string, string> = {
+  'Qwen/Qwen2.5-Coder-32B-Instruct': 'Qwen/Qwen3-32B:cheapest',
+  'Qwen/Qwen3-Coder-30B-A3B-Instruct': 'Qwen/Qwen3-32B:cheapest',
+  'Qwen/Qwen2.5-7B-Instruct': 'Qwen/Qwen3.5-9B:cheapest',
+};
+
 export function getLocalKeys(): KeyConfig[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
-    return JSON.parse(raw);
+    const parsed: KeyConfig[] = JSON.parse(raw);
+    return parsed.map((k) => {
+      if (k.provider === 'huggingface' && k.model) {
+        const mapped = HF_REMOVED_MODEL_MAP[k.model] || (k.model.includes(':') ? k.model : `${k.model}:cheapest`);
+        if (mapped !== k.model) return { ...k, model: mapped };
+      }
+      return k;
+    });
   } catch (err) {
     console.error('Failed to parse local API keys:', err);
     return [];

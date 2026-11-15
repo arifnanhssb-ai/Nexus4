@@ -228,11 +228,12 @@ export const OPENROUTER_FALLBACK_CHAIN = [
 ] as const;
 
 export const HUGGINGFACE_FALLBACK_CHAIN = [
-  'Qwen/Qwen2.5-Coder-32B-Instruct',
-  'deepseek-ai/DeepSeek-V3-0324',
-  'deepseek-ai/DeepSeek-R1',
-  'meta-llama/Llama-3.3-70B-Instruct',
-  'Qwen/Qwen2.5-7B-Instruct',
+  'deepseek-ai/DeepSeek-V4-Flash:cheapest',
+  'Qwen/Qwen3-32B:cheapest',
+  'Qwen/Qwen3.5-9B:cheapest',
+  'openai/gpt-oss-20b:cheapest',
+  'google/gemma-3-27b-it:cheapest',
+  'meta-llama/Llama-3.1-8B-Instruct:cheapest',
 ] as const;
 
 export const DEEPSEEK_FALLBACK_CHAIN = [
@@ -434,11 +435,11 @@ export async function fetchHuggingFaceWithFallback(options: {
   }) => void;
 }): Promise<{ response: globalThis.Response; model: string; data: any }> {
   const baseChain = getHuggingFaceModelChain(options.preferredModel);
-  const preferredBase = (baseChain[0] || 'Qwen/Qwen2.5-Coder-32B-Instruct').replace(/:.+$/, '');
+  const preferredBase = (baseChain[0] || 'deepseek-ai/DeepSeek-V4-Flash').replace(/:.+$/, '');
   const cheapestCandidates = [
     `${preferredBase}:cheapest`,
-    'Qwen/Qwen2.5-Coder-32B-Instruct:cheapest',
-    'Qwen/Qwen2.5-7B-Instruct:cheapest',
+    'Qwen/Qwen3.5-9B:cheapest',
+    'meta-llama/Llama-3.1-8B-Instruct:cheapest',
   ];
   const chain: string[] = [];
   for (const m of [...baseChain, ...cheapestCandidates]) {
@@ -448,7 +449,7 @@ export async function fetchHuggingFaceWithFallback(options: {
   let payment402Count = 0;
 
   const formatHf402Message = (raw: string) =>
-    `Hugging Face Router (402): এই HF অ্যাকাউন্টে Inference Providers ক্রেডিট নেই বা ফ্রি লিমিট ($0.10/মাস) চালু/বাকি নেই (${raw})। HF API আগে ব্যবহার না করলেও ফ্রি অ্যাকাউন্টে $0.10 লিমিট বা বড় মডেলে পেইড/PRO বিলিং ছাড়া এই 402 আসে — সম্পূর্ণ ফ্রিতে চালাতে OpenRouter (:free), Groq বা Cerebras ব্যবহার করুন।`;
+    `Hugging Face Router (402): Hugging Face-এ ফ্রি অ্যাকাউন্টের জন্য এখন কোনো $0 ফ্রি চ্যাট মডেল বা মাসিক ফ্রি ক্রেডিট নেই (${raw})। HF অ্যাকাউন্টে ক্রেডিট/PRO অথবা HF Settings > Inference Providers-এ BYOK সেট করা না থাকলে সব মডেলেই 402 আসে — একদম ফ্রিতে চালাতে OpenRouter (:free), Groq বা Cerebras ব্যবহার করুন।`;
 
   for (let idx = 0; idx < chain.length; idx++) {
     const candidateModel = chain[idx];
@@ -498,7 +499,7 @@ export async function fetchHuggingFaceWithFallback(options: {
         errors.push({ model: candidateModel, status: 402, message: rawMsg });
 
         if (payment402Count === 1) {
-          const cheapestIdx = chain.findIndex((m, j) => j > idx && (m.endsWith(':cheapest') || /Qwen2\.5-7B|Qwen2\.5-Coder-32B/i.test(m)));
+          const cheapestIdx = chain.findIndex((m, j) => j > idx && (m.endsWith(':cheapest') || /Llama-3\.1-8B|Qwen3\.5-9B|gpt-oss-20b/i.test(m)));
           if (cheapestIdx > idx) {
             options.onFallback?.({
               failedModel: candidateModel,
@@ -676,14 +677,14 @@ export async function fetchLiveProviderModels(
       { id: 'mistralai/mistral-small-3.1-24b-instruct:free', label: 'Mistral Small 3.1 24B (:free)', badge: 'Free · Fast' },
     ],
     huggingface: [
-      { id: 'Qwen/Qwen2.5-Coder-32B-Instruct', label: 'Qwen 2.5 Coder 32B Instruct', badge: 'Primary · Coding' },
-      { id: 'deepseek-ai/DeepSeek-V3-0324', label: 'DeepSeek V3 0324 (HF Router)', badge: 'Fallback 2 · V3' },
-      { id: 'deepseek-ai/DeepSeek-R1', label: 'DeepSeek R1 (HF Router)', badge: 'Fallback 3 · Reasoning' },
-      { id: 'meta-llama/Llama-3.3-70B-Instruct', label: 'Llama 3.3 70B Instruct', badge: 'HF Router · 70B' },
-      { id: 'Qwen/Qwen2.5-72B-Instruct', label: 'Qwen 2.5 72B Instruct', badge: 'HF Router · 72B' },
-      { id: 'Qwen/Qwen3-Coder-30B-A3B-Instruct', label: 'Qwen3 Coder 30B', badge: 'HF Router · Coding' },
-      { id: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B (HF Router)', badge: 'HF Router · 120B' },
-      { id: 'Qwen/Qwen2.5-7B-Instruct', label: 'Qwen 2.5 7B Instruct', badge: 'HF Router · Fast' },
+      { id: 'deepseek-ai/DeepSeek-V4-Flash:cheapest', label: 'DeepSeek V4 Flash (:cheapest)', badge: 'Primary · $0.18/1M' },
+      { id: 'Qwen/Qwen3-32B:cheapest', label: 'Qwen 3 32B (:cheapest)', badge: 'Coding · $0.28/1M' },
+      { id: 'Qwen/Qwen3.5-9B:cheapest', label: 'Qwen 3.5 9B (:cheapest)', badge: 'Light · $0.15/1M' },
+      { id: 'openai/gpt-oss-20b:cheapest', label: 'GPT-OSS 20B (:cheapest)', badge: 'Fast · $0.14/1M' },
+      { id: 'google/gemma-3-27b-it:cheapest', label: 'Gemma 3 27B IT (:cheapest)', badge: '27B · $0.16/1M' },
+      { id: 'meta-llama/Llama-3.1-8B-Instruct:cheapest', label: 'Llama 3.1 8B Instruct (:cheapest)', badge: 'Cheapest · $0.05/1M' },
+      { id: 'zai-org/GLM-4.7-Flash:cheapest', label: 'GLM 4.7 Flash (:cheapest)', badge: 'Flash · $0.40/1M' },
+      { id: 'meta-llama/Llama-3.3-70B-Instruct:cheapest', label: 'Llama 3.3 70B Instruct (:cheapest)', badge: '70B · $0.40/1M' },
     ],
     deepseek: [
       { id: 'deepseek-chat', label: 'DeepSeek Chat (V3)', badge: 'Coding · Tool Calling' },
@@ -748,19 +749,32 @@ export async function fetchLiveProviderModels(
       if (res.ok) {
         const json = await res.json();
         const rawModels: any[] = json.data || [];
-        const priorityRegex = /(qwen|deepseek|llama|gemma|mistral|gpt-oss|coder|devstral)/i;
-        const prioritized = [
-          ...rawModels.filter(m => priorityRegex.test(String(m.id || ''))),
-          ...rawModels.filter(m => !priorityRegex.test(String(m.id || ''))),
-        ];
-        const hfModels = prioritized
-          .filter(m => Boolean(m?.id))
-          .slice(0, 45)
-          .map(m => ({
-            id: String(m.id),
-            label: String(m.id).split('/').pop() || String(m.id),
-            badge: 'HF Router · Live',
-          }));
+        const withLowestPrice = rawModels
+          .filter((m) => Boolean(m?.id))
+          .map((m) => {
+            const liveProviders = Array.isArray(m.providers) ? m.providers.filter((p: any) => p.status === 'live') : [];
+            const prices = liveProviders
+              .map((p: any) => (typeof p?.pricing?.output === 'number' ? Number(p.pricing.output) : null))
+              .filter((v: number | null): v is number => v !== null);
+            const hasFreeFlag = liveProviders.some((p: any) => p?.is_free === true);
+            const minOut = hasFreeFlag ? 0 : prices.length > 0 ? Math.min(...prices) : 999;
+            return { id: String(m.id), minOut, hasFreeFlag };
+          })
+          .sort((a, b) => a.minOut - b.minOut);
+
+        const hfModels = withLowestPrice.slice(0, 45).map((m) => {
+          const shortName = m.id.split('/').pop() || m.id;
+          const badge = m.hasFreeFlag
+            ? 'Free · Live'
+            : m.minOut < 999
+              ? `:cheapest · $${m.minOut.toFixed(2)}/1M`
+              : 'HF Router · :cheapest';
+          return {
+            id: m.id.includes(':') ? m.id : `${m.id}:cheapest`,
+            label: `${shortName} (:cheapest)`,
+            badge,
+          };
+        });
         if (hfModels.length > 0) return hfModels;
       }
     } else if (provider === 'gemini' && apiKey) {
@@ -848,10 +862,17 @@ export function normalizeModelName(provider: string, model?: string): string {
     return model.trim();
   }
   if (provider === 'huggingface') {
-    if (!model || model.trim() === '') {
-      return 'Qwen/Qwen2.5-Coder-32B-Instruct';
+    const clean = (model || '').trim().replace(/^hf:/i, '');
+    if (!clean) {
+      return 'deepseek-ai/DeepSeek-V4-Flash:cheapest';
     }
-    return model.trim().replace(/^hf:/i, '');
+    const deprecatedMap: Record<string, string> = {
+      'Qwen/Qwen2.5-Coder-32B-Instruct': 'Qwen/Qwen3-32B:cheapest',
+      'Qwen/Qwen3-Coder-30B-A3B-Instruct': 'Qwen/Qwen3-32B:cheapest',
+      'Qwen/Qwen2.5-7B-Instruct': 'Qwen/Qwen3.5-9B:cheapest',
+    };
+    if (deprecatedMap[clean]) return deprecatedMap[clean];
+    return clean.includes(':') ? clean : `${clean}:cheapest`;
   }
   if (provider === 'deepseek') {
     const clean = (model || '').trim();
@@ -3087,7 +3108,7 @@ async function streamOpenAICompatible(
           }
           const formattedMsg =
             routerProvider === 'huggingface'
-              ? `Hugging Face Router (402): এই HF অ্যাকাউন্টে Inference Providers ক্রেডিট নেই বা ফ্রি লিমিট ($0.10/মাস) চালু/বাকি নেই (${msg})`
+              ? `Hugging Face Router (402): HF ফ্রি অ্যাকাউন্টে $0 ফ্রি চ্যাট ক্রেডিট না থাকায় সব মডেলে 402 আসছে (${msg}) — একদম ফ্রিতে চালাতে OpenRouter (:free), Groq বা Cerebras ব্যবহার করুন।`
               : msg;
           const creditErr = new Error(formattedMsg);
           (creditErr as any).status = 402;
@@ -3213,7 +3234,7 @@ The server will execute it immediately and send back the result so you can conti
             }
             const formattedMsg =
               routerProvider === 'huggingface'
-                ? `Hugging Face Router (402): এই HF অ্যাকাউন্টে Inference Providers ক্রেডিট নেই বা ফ্রি লিমিট ($0.10/মাস) চালু/বাকি নেই (${finalErrMsg})`
+                ? `Hugging Face Router (402): HF ফ্রি অ্যাকাউন্টে $0 ফ্রি চ্যাট ক্রেডিট না থাকায় সব মডেলে 402 আসছে (${finalErrMsg}) — একদম ফ্রিতে চালাতে OpenRouter (:free), Groq বা Cerebras ব্যবহার করুন।`
                 : finalErrMsg;
             const creditErr = new Error(formattedMsg);
             (creditErr as any).status = 402;
@@ -4348,7 +4369,7 @@ export async function executeOrchestratedChat(
         return { provider: 'openrouter', model: clean };
       }
       if (/^hf:/i.test(clean) || (clean.includes('/') && !clean.endsWith(':free') && !clean.startsWith('gemini-'))) {
-        return { provider: 'huggingface', model: clean.replace(/^hf:/i, '') };
+        return { provider: 'huggingface', model: normalizeModelName('huggingface', clean) };
       }
       return { provider: 'gemini', model: normalizeModelName('gemini', clean) };
     })();

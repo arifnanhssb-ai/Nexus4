@@ -20,7 +20,7 @@ export interface KeyMetadata {
   isCustomKey?: boolean;
 }
 
-export type ApiProviderId = 'gemini' | 'openrouter' | 'groq' | 'cerebras' | 'mistral' | 'grok' | 'custom';
+export type ApiProviderId = 'gemini' | 'openrouter' | 'huggingface' | 'deepseek' | 'groq' | 'cerebras' | 'mistral' | 'grok' | 'custom';
 
 export type KeyRoleTier = 'auto' | 'architect' | 'builder' | 'fast';
 

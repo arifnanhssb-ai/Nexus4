@@ -51,6 +51,32 @@ export const PROVIDER_CATALOG: ProviderPresetInfo[] = [
     ],
   },
   {
+    id: 'huggingface',
+    label: 'Hugging Face Router (Free Inference Providers)',
+    freeTierNote: 'Free token (hf_...) at huggingface.co/settings/tokens — OpenRouter-style Router + Auto-Fallback across Qwen, DeepSeek & Llama',
+    keyPlaceholder: 'hf_...',
+    models: [
+      { id: 'Qwen/Qwen2.5-Coder-32B-Instruct', label: 'Qwen 2.5 Coder 32B Instruct', badge: 'Primary · Coding' },
+      { id: 'deepseek-ai/DeepSeek-V3-0324', label: 'DeepSeek V3 0324 (HF Free Router)', badge: 'Fallback 2 · V3' },
+      { id: 'deepseek-ai/DeepSeek-R1', label: 'DeepSeek R1 (HF Free Router)', badge: 'Fallback 3 · Reasoning' },
+      { id: 'meta-llama/Llama-3.3-70B-Instruct', label: 'Llama 3.3 70B Instruct', badge: 'Fallback 4 · 70B' },
+      { id: 'Qwen/Qwen2.5-72B-Instruct', label: 'Qwen 2.5 72B Instruct', badge: 'Free · 72B' },
+      { id: 'Qwen/Qwen3-Coder-30B-A3B-Instruct', label: 'Qwen3 Coder 30B', badge: 'Free · Coding' },
+      { id: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B (HF Router)', badge: 'Free · 120B' },
+      { id: 'Qwen/Qwen2.5-7B-Instruct', label: 'Qwen 2.5 7B Instruct', badge: 'Free · Fast' },
+    ],
+  },
+  {
+    id: 'deepseek',
+    label: 'DeepSeek API (DeepSeek V3 & R1)',
+    freeTierNote: 'DeepSeek API key (sk-...) at platform.deepseek.com — DeepSeek V3 (deepseek-chat) & DeepSeek R1 (deepseek-reasoner)',
+    keyPlaceholder: 'sk-...',
+    models: [
+      { id: 'deepseek-chat', label: 'DeepSeek Chat (V3)', badge: 'Coding · Tool Calling' },
+      { id: 'deepseek-reasoner', label: 'DeepSeek Reasoner (R1)', badge: 'Deep Reasoning' },
+    ],
+  },
+  {
     id: 'groq',
     label: 'Groq Cloud (Free Tier · Ultra-Fast LPU)',
     freeTierNote: 'Free high-speed API key at console.groq.com/keys',
@@ -122,6 +148,10 @@ export function getProviderFreeDefaults(provider: ApiProviderId): { rpmLimit: nu
       return { rpmLimit: 30, tpmLimit: 60000 };
     case 'openrouter':
       return { rpmLimit: 20, tpmLimit: 40000 };
+    case 'huggingface':
+      return { rpmLimit: 20, tpmLimit: 40000 };
+    case 'deepseek':
+      return { rpmLimit: 30, tpmLimit: 100000 };
     case 'mistral':
       return { rpmLimit: 20, tpmLimit: 50000 };
     case 'grok':
@@ -136,6 +166,8 @@ export function detectProviderFromApiKey(rawKey: string): ApiProviderId | null {
   if (!k) return null;
   if (/^AIza[0-9A-Za-z_-]{20,}/.test(k) || /^AQ\.[0-9A-Za-z_.-]{15,}/.test(k)) return 'gemini';
   if (/^sk-or-v1-[0-9a-fA-F]{20,}/.test(k)) return 'openrouter';
+  if (/^hf_[0-9A-Za-z_-]{16,}/.test(k)) return 'huggingface';
+  if (/^sk-[0-9a-fA-F]{24,}$/.test(k)) return 'deepseek';
   if (/^gsk_[0-9A-Za-z_-]{20,}/.test(k)) return 'groq';
   if (/^csk-[0-9A-Za-z_-]{16,}/.test(k)) return 'cerebras';
   if (/^xai-[0-9A-Za-z_-]{16,}/.test(k)) return 'grok';
@@ -146,10 +178,10 @@ export function detectProviderFromApiKey(rawKey: string): ApiProviderId | null {
 export function inferKeyRoleTier(model: string, explicit?: KeyRoleTier): Exclude<KeyRoleTier, 'auto'> {
   if (explicit && explicit !== 'auto') return explicit;
   const m = (model || '').toLowerCase();
-  if (/(pro|hydrogen|argon|carbon|deepseek-r1|qwen3-coder|480b|120b|70b|devstral|deepseek-chat|grok-3)/i.test(m)) {
+  if (/(pro|hydrogen|argon|carbon|deepseek-r1|deepseek-reasoner|deepseek-v3|qwen3-coder|qwen2\.5-coder-32b|qwen2\.5-72b|480b|120b|70b|devstral|deepseek-chat|grok-3)/i.test(m)) {
     return 'architect';
   }
-  if (/(flash-lite|8b|instant|nemotron|flint|openrouter\/free|small-latest|small-3\.1)/i.test(m)) {
+  if (/(flash-lite|8b|7b|instant|nemotron|flint|openrouter\/free|small-latest|small-3\.1)/i.test(m)) {
     return 'fast';
   }
   return 'builder';

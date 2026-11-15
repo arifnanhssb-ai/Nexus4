@@ -322,7 +322,7 @@ export const SecretsModal: React.FC<SecretsModalProps> = ({ isOpen, onClose, onK
             <div>
               <h3 className="text-sm font-bold text-white">Free API Keys & Model Selection Pool</h3>
               <p className="text-[11px] text-slate-400">
-                Gemini Free, OpenRouter (:free), Groq, Cerebras, Mistral বা Custom Free API যুক্ত করে মডেল বেছে নিন
+                Gemini, OpenRouter (:free), Hugging Face Router, DeepSeek API, Groq, Cerebras, Mistral বা Custom API যুক্ত করুন
               </p>
             </div>
           </div>
@@ -481,7 +481,14 @@ export const SecretsModal: React.FC<SecretsModalProps> = ({ isOpen, onClose, onK
                   <input
                     type="password"
                     value={newApiKey}
-                    onChange={(e) => setNewApiKey(e.target.value)}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setNewApiKey(val);
+                      const detected = detectProviderFromApiKey(val);
+                      if (detected && detected !== newProvider) {
+                        handleProviderChange(detected);
+                      }
+                    }}
                     placeholder={activePreset.keyPlaceholder}
                     className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-2 text-white font-mono text-xs focus:outline-none focus:border-indigo-500"
                   />
@@ -536,7 +543,7 @@ export const SecretsModal: React.FC<SecretsModalProps> = ({ isOpen, onClose, onK
                     rows={4}
                     value={bulkKeysText}
                     onChange={(e) => setBulkKeysText(e.target.value)}
-                    placeholder={`AIzaSy... (Gemini)\nsk-or-v1-... (OpenRouter)\ngsk_... (Groq)\ncsk-... (Cerebras)`}
+                    placeholder={`AIzaSy... (Gemini)\nsk-or-v1-... (OpenRouter)\nhf_... (Hugging Face Router)\nsk-... (DeepSeek API)\ngsk_... (Groq)\ncsk-... (Cerebras)`}
                     className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-2 text-white font-mono text-xs focus:outline-none focus:border-indigo-500 resize-y"
                   />
                   <label className="mt-1.5 flex items-center gap-1.5 text-[10px] text-slate-300 cursor-pointer select-none">
@@ -546,7 +553,7 @@ export const SecretsModal: React.FC<SecretsModalProps> = ({ isOpen, onClose, onK
                       onChange={(e) => setBulkAutoDetect(e.target.checked)}
                       className="rounded border-slate-600 bg-slate-800 text-indigo-500"
                     />
-                    <span>কী-এর প্রিফিক্স (`AIza`, `sk-or-v1`, `gsk_`, `csk-`, `xai-`) দেখে প্রভাইডার অটো-ডিটেক্ট করো</span>
+                    <span>কী-এর প্রিফিক্স (`AIza`, `sk-or-v1`, `hf_`, `sk-`, `gsk_`, `csk-`, `xai-`) দেখে প্রভাইডার অটো-ডিটেক্ট করো</span>
                   </label>
                 </div>
 
@@ -599,7 +606,7 @@ export const SecretsModal: React.FC<SecretsModalProps> = ({ isOpen, onClose, onK
                     </span>
                   );
                 })()}
-                {(['gemini', 'openrouter', 'groq', 'cerebras', 'mistral', 'grok', 'custom'] as ApiProviderId[]).map((prov) => {
+                {(['gemini', 'openrouter', 'huggingface', 'deepseek', 'groq', 'cerebras', 'mistral', 'grok', 'custom'] as ApiProviderId[]).map((prov) => {
                   const count = keys.filter(k => k.provider === prov && k.isActive).length;
                   if (count === 0) return null;
                   return (
@@ -630,7 +637,7 @@ export const SecretsModal: React.FC<SecretsModalProps> = ({ isOpen, onClose, onK
 
             {keys.length === 0 ? (
               <div className="p-4 bg-slate-900/40 border border-dashed border-slate-800 rounded-xl text-center text-slate-500 text-xs">
-                এখনো কোনো কাস্টম কী যুক্ত করা হয়নি। উপরে আপনার ফ্রি Gemini / OpenRouter / Groq কী ও মডেল যুক্ত করুন।
+                এখনো কোনো কাস্টম কী যুক্ত করা হয়নি। উপরে আপনার ফ্রি Gemini / OpenRouter / Hugging Face / DeepSeek / Groq কী ও মডেল যুক্ত করুন।
               </div>
             ) : (
               keys.map((k) => {

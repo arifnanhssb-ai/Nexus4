@@ -51,6 +51,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { ActionHistoryAccordion } from './ActionHistoryAccordion';
 import { PWAInstallButton } from './PWAInstallButton';
 import { ActionStep } from '../types/secrets';
+import { getLocalKeys } from '../lib/secretsManager';
 
 interface GoogleAIStudioCoderViewProps {
   messages: any[];
@@ -329,14 +330,38 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
     setSelectedModel?.(modelId);
     setShowModelDropdown(false);
   };
-  const MODEL_OPTIONS = [
+  const baseModelOptions = [
     { id: 'Default', label: 'Default (Key Model)', desc: 'Uses each API key’s chosen model' },
     { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite', desc: 'Free tier · ultra-fast & light' },
     { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', desc: 'Fast coding & UI builds' },
     { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite', desc: 'Free tier · 1,500 RPD quota' },
     { id: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro', desc: 'Complex multi-file architecture' },
     { id: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen', desc: 'Flagship deep reasoning' },
+    { id: 'deepseek-chat', label: 'DeepSeek Chat (V3 · DeepSeek API)', desc: 'DeepSeek API · fast coding & tool calling' },
+    { id: 'deepseek-reasoner', label: 'DeepSeek Reasoner (R1 · DeepSeek API)', desc: 'DeepSeek API · deep reasoning' },
+    { id: 'Qwen/Qwen2.5-Coder-32B-Instruct', label: 'Qwen 2.5 Coder 32B (HF Router)', desc: 'Hugging Face free router · coding' },
+    { id: 'deepseek-ai/DeepSeek-V3-0324', label: 'DeepSeek V3 0324 (HF Router)', desc: 'Hugging Face free router · V3' },
+    { id: 'deepseek-ai/DeepSeek-R1', label: 'DeepSeek R1 (HF Router)', desc: 'Hugging Face free router · R1' },
+    { id: 'meta-llama/Llama-3.3-70B-Instruct', label: 'Llama 3.3 70B (HF Router)', desc: 'Hugging Face free router · 70B' },
+    { id: 'deepseek/deepseek-r1:free', label: 'DeepSeek R1 (:free · OpenRouter)', desc: 'OpenRouter free reasoning' },
+    { id: 'deepseek/deepseek-chat-v3-0324:free', label: 'DeepSeek V3 (:free · OpenRouter)', desc: 'OpenRouter free coding' },
   ];
+  const MODEL_OPTIONS = (() => {
+    const seen = new Set(baseModelOptions.map((m) => m.id));
+    const extras: typeof baseModelOptions = [];
+    try {
+      for (const k of getLocalKeys()) {
+        if (!k.isActive || !k.model || seen.has(k.model)) continue;
+        seen.add(k.model);
+        extras.push({
+          id: k.model,
+          label: k.model.split('/').pop() || k.model,
+          desc: `Configured on ${k.provider.toUpperCase()} (${k.name})`,
+        });
+      }
+    } catch {}
+    return [...baseModelOptions, ...extras];
+  })();
   const PERSONA_OPTIONS = [
     { id: '', label: 'Default Senior Engineer' },
     { id: 'Senior React & TypeScript Specialist', label: 'React & TypeScript' },
@@ -1355,16 +1380,16 @@ export const GoogleAIStudioCoderView: React.FC<GoogleAIStudioCoderViewProps> = (
                       </button>
 
                       {showModelDropdown && (
-                        <div className="absolute bottom-full mb-2 right-0 bg-[#1c1d22] border border-slate-700 rounded-xl p-1.5 shadow-2xl z-50 min-w-[240px]">
+                        <div className="absolute bottom-full mb-2 right-0 bg-[#1c1d22] border border-slate-700 rounded-xl p-1.5 shadow-2xl z-50 min-w-[270px] max-h-72 overflow-y-auto">
                           {MODEL_OPTIONS.map((m) => (
                             <button
                               key={m.id}
                               onClick={() => handleSelectModel(m.id)}
                               className="w-full text-left px-3 py-2 rounded-lg text-xs hover:bg-slate-800 text-slate-200 flex items-center justify-between gap-2 cursor-pointer"
                             >
-                              <div>
-                                <div className="font-medium text-white">{m.label}</div>
-                                <div className="text-[10px] text-slate-400">{m.desc}</div>
+                              <div className="min-w-0">
+                                <div className="font-medium text-white truncate">{m.label}</div>
+                                <div className="text-[10px] text-slate-400 truncate">{m.desc}</div>
                               </div>
                               {effectiveModel === m.id && <Check className="w-3.5 h-3.5 text-indigo-400 flex-shrink-0" />}
                             </button>

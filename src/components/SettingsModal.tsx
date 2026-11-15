@@ -66,7 +66,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   API Keys & Rotation Pool
                 </div>
                 <div className="text-[11px] text-slate-400">
-                  Manage Gemini, OpenRouter, and Grok API keys
+                  Manage Gemini, OpenRouter, Hugging Face, DeepSeek &amp; Groq keys
                 </div>
               </div>
             </div>

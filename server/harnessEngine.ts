@@ -566,24 +566,40 @@ Reply in strict JSON ONLY: {"passed": true|false, "issues": ["specific actionabl
   let criticName = criticKey ? `${criticKey.name} (${criticKey.provider})` : 'Fallback Critic';
 
   try {
-    if (criticKey && criticKey.provider === 'openrouter') {
-      const orChain = [
-        'cohere/north-mini-code:free',
-        'nvidia/nemotron-3.5-lightning:free',
-        'recursive/flint-v1.0:free',
-        'openrouter/free',
-      ];
-      const ep = 'https://openrouter.ai/api/v1/chat/completions';
-      for (const candidateModel of orChain) {
+    if (criticKey && (criticKey.provider === 'openrouter' || criticKey.provider === 'huggingface')) {
+      const isHf = criticKey.provider === 'huggingface';
+      const fallbackChain = isHf
+        ? [
+            ...(criticKey.model ? [criticKey.model] : []),
+            'Qwen/Qwen2.5-Coder-32B-Instruct',
+            'deepseek-ai/DeepSeek-V3-0324',
+            'meta-llama/Llama-3.3-70B-Instruct',
+          ].filter((m, idx, arr) => Boolean(m) && arr.indexOf(m) === idx)
+        : [
+            'cohere/north-mini-code:free',
+            'nvidia/nemotron-3.5-lightning:free',
+            'recursive/flint-v1.0:free',
+            'openrouter/free',
+          ];
+      const ep = isHf
+        ? 'https://router.huggingface.co/v1/chat/completions'
+        : 'https://openrouter.ai/api/v1/chat/completions';
+      const reqHeaders: Record<string, string> = isHf
+        ? {
+            Authorization: `Bearer ${criticKey.apiKey}`,
+            'Content-Type': 'application/json',
+          }
+        : {
+            Authorization: `Bearer ${criticKey.apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://nexus-ai.local',
+            'X-Title': 'Nexus AI',
+          };
+      for (const candidateModel of fallbackChain) {
         try {
           const res = await fetch(ep, {
             method: 'POST',
-            headers: {
-              Authorization: `Bearer ${criticKey.apiKey}`,
-              'Content-Type': 'application/json',
-              'HTTP-Referer': 'https://nexus-ai.local',
-              'X-Title': 'Nexus AI',
-            },
+            headers: reqHeaders,
             body: JSON.stringify({
               model: candidateModel,
               messages: [
@@ -599,10 +615,10 @@ Reply in strict JSON ONLY: {"passed": true|false, "issues": ["specific actionabl
             const content = j?.choices?.[0]?.message?.content || '';
             if (content) {
               rawResponse = content;
-              criticName = `${criticKey.name} (openrouter · ${candidateModel})`;
+              criticName = `${criticKey.name} (${criticKey.provider} · ${candidateModel})`;
               break;
             }
-          } else if (res.status === 401) {
+          } else if (res.status === 401 || res.status === 402 || res.status === 403) {
             break;
           }
         } catch {

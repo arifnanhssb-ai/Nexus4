@@ -105,7 +105,7 @@ export function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Pro
   });
 }
 
-export type ApiProviderId = 'gemini' | 'openrouter' | 'groq' | 'cerebras' | 'mistral' | 'grok' | 'custom';
+export type ApiProviderId = 'gemini' | 'openrouter' | 'huggingface' | 'deepseek' | 'groq' | 'cerebras' | 'mistral' | 'grok' | 'custom';
 
 export type KeyRoleTier = 'auto' | 'architect' | 'builder' | 'fast';
 
@@ -143,6 +143,8 @@ const FREE_PROVIDER_DEFAULTS: Record<string, { rpm: number; tpm: number }> = {
   groq: { rpm: 30, tpm: 6_000 },
   cerebras: { rpm: 30, tpm: 60_000 },
   openrouter: { rpm: 20, tpm: 40_000 },
+  huggingface: { rpm: 20, tpm: 40_000 },
+  deepseek: { rpm: 30, tpm: 100_000 },
   mistral: { rpm: 20, tpm: 50_000 },
   grok: { rpm: 20, tpm: 40_000 },
   custom: { rpm: 20, tpm: 40_000 },
@@ -151,10 +153,10 @@ const FREE_PROVIDER_DEFAULTS: Record<string, { rpm: number; tpm: number }> = {
 export function inferKeyRoleTier(model: string, explicit?: KeyRoleTier): Exclude<KeyRoleTier, 'auto'> {
   if (explicit && explicit !== 'auto') return explicit;
   const m = (model || '').toLowerCase();
-  if (/(pro|hydrogen|argon|carbon|deepseek-r1|qwen3-coder|480b|120b|70b|devstral|deepseek-chat|grok-3)/i.test(m)) {
+  if (/(pro|hydrogen|argon|carbon|deepseek-r1|deepseek-reasoner|deepseek-v3|qwen3-coder|qwen2\.5-coder-32b|qwen2\.5-72b|480b|120b|70b|devstral|deepseek-chat|grok-3)/i.test(m)) {
     return 'architect';
   }
-  if (/(flash-lite|8b|instant|nemotron|flint|openrouter\/free|small-latest|small-3\.1)/i.test(m)) {
+  if (/(flash-lite|8b|7b|instant|nemotron|flint|openrouter\/free|small-latest|small-3\.1)/i.test(m)) {
     return 'fast';
   }
   return 'builder';
@@ -191,11 +193,13 @@ function releaseKeyInFlight(keyId?: string): void {
 const PROVIDER_SPEED_RANK: Record<string, number> = {
   cerebras: 1,
   groq: 2,
-  gemini: 3,
-  mistral: 4,
-  grok: 5,
-  custom: 6,
-  openrouter: 7,
+  deepseek: 3,
+  gemini: 4,
+  mistral: 5,
+  huggingface: 6,
+  grok: 7,
+  custom: 8,
+  openrouter: 9,
 };
 
 // Circuit-breaker for temporarily dead/unavailable provider models (keyed by `${provider}::${model}`)
@@ -223,6 +227,19 @@ export const OPENROUTER_FALLBACK_CHAIN = [
   'openrouter/free',
 ] as const;
 
+export const HUGGINGFACE_FALLBACK_CHAIN = [
+  'Qwen/Qwen2.5-Coder-32B-Instruct',
+  'deepseek-ai/DeepSeek-V3-0324',
+  'deepseek-ai/DeepSeek-R1',
+  'meta-llama/Llama-3.3-70B-Instruct',
+  'Qwen/Qwen2.5-7B-Instruct',
+] as const;
+
+export const DEEPSEEK_FALLBACK_CHAIN = [
+  'deepseek-chat',
+  'deepseek-reasoner',
+] as const;
+
 export function getOpenRouterModelChain(preferredModel?: string | null): string[] {
   const clean = (preferredModel || '').trim();
   const baseChain = [...OPENROUTER_FALLBACK_CHAIN];
@@ -236,9 +253,35 @@ export function getOpenRouterModelChain(preferredModel?: string | null): string[
   return [clean, ...baseChain];
 }
 
+export function getHuggingFaceModelChain(preferredModel?: string | null): string[] {
+  const clean = (preferredModel || '').trim();
+  const baseChain = [...HUGGINGFACE_FALLBACK_CHAIN];
+  const combined = !clean
+    ? baseChain
+    : [clean, ...baseChain.filter((m) => m !== clean)];
+  const available = combined.filter((m) => !isModelInOutage('huggingface', m));
+  return available.length > 0 ? available : combined;
+}
+
+export function getDeepSeekModelChain(preferredModel?: string | null): string[] {
+  const clean = (preferredModel || '').trim();
+  const baseChain = [...DEEPSEEK_FALLBACK_CHAIN];
+  const combined = !clean
+    ? baseChain
+    : [clean, ...baseChain.filter((m) => m !== clean)];
+  const available = combined.filter((m) => !isModelInOutage('deepseek', m));
+  return available.length > 0 ? available : combined;
+}
+
 export function getProviderModelChain(provider: string, preferredModel?: string | null): string[] {
   if (provider === 'openrouter') {
     return getOpenRouterModelChain(preferredModel);
+  }
+  if (provider === 'huggingface') {
+    return getHuggingFaceModelChain(preferredModel);
+  }
+  if (provider === 'deepseek') {
+    return getDeepSeekModelChain(preferredModel);
   }
   const chains: Record<string, string[]> = {
     gemini: ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-4-hydrogen', 'gemini-3.8-flash'],
@@ -376,6 +419,131 @@ export async function fetchOpenRouterWithFallback(options: {
   throw finalErr;
 }
 
+export async function fetchHuggingFaceWithFallback(options: {
+  apiKey: string;
+  messages: any[];
+  preferredModel?: string | null;
+  max_tokens?: number;
+  timeoutMs?: number;
+  onFallback?: (info: {
+    failedModel: string;
+    nextModel: string;
+    reason: string;
+    attempt: number;
+    total: number;
+  }) => void;
+}): Promise<{ response: globalThis.Response; model: string; data: any }> {
+  const chain = getHuggingFaceModelChain(options.preferredModel);
+  const errors: Array<{ model: string; status: number; message: string }> = [];
+
+  for (let idx = 0; idx < chain.length; idx++) {
+    const candidateModel = chain[idx];
+    const bodyPayload: Record<string, any> = {
+      model: candidateModel,
+      messages: options.messages,
+      stream: false,
+    };
+    if (typeof options.max_tokens === 'number') {
+      bodyPayload.max_tokens = options.max_tokens;
+    }
+
+    try {
+      const res = await fetch('https://router.huggingface.co/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${options.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(bodyPayload),
+        ...(options.timeoutMs ? { signal: AbortSignal.timeout(options.timeoutMs) } : {}),
+      });
+
+      const data = await res.json().catch(() => null);
+      if (res.ok && !data?.error && data?.choices?.[0]?.message) {
+        return { response: res, model: candidateModel, data };
+      }
+
+      const rawMsg =
+        (typeof data?.error === 'string' ? data.error : data?.error?.message) ||
+        data?.message ||
+        `HTTP ${res.status}: ${res.statusText || 'Hugging Face Router error'}`;
+      const status = Number(data?.error?.code || res.status || 502);
+
+      if (status === 401 || status === 403 || /Invalid credentials|Unauthorized|sufficient permissions/i.test(rawMsg)) {
+        const authErr = new Error(
+          status === 403 || /permissions/i.test(rawMsg)
+            ? `Hugging Face টোকেনে Inference Providers পারমিশন নেই (${rawMsg})। huggingface.co/settings/tokens থেকে "Make calls to Inference Providers" অন করে টোকেন দিন।`
+            : `অকার্যকর Hugging Face টোকেন (hf_...): ${rawMsg}`
+        );
+        (authErr as any).status = status === 403 ? 403 : 401;
+        throw authErr;
+      }
+
+      if (status === 402 || /exceeded.*monthly.*credits|payment required/i.test(rawMsg)) {
+        const creditErr = new Error(`Hugging Face মাসিক ফ্রি ক্রেডিট শেষ হয়েছে (402): ${rawMsg}`);
+        (creditErr as any).status = 402;
+        throw creditErr;
+      }
+
+      errors.push({ model: candidateModel, status, message: rawMsg });
+      addSystemLog({
+        level: 'warn',
+        category: status === 429 ? 'rate_limit' : 'rotation',
+        provider: 'huggingface',
+        model: candidateModel,
+        message: `Hugging Face Router fallback: ${candidateModel} failed (${status}) -> ${
+          idx < chain.length - 1 ? chain[idx + 1] : 'NO MORE BACKUPS'
+        }`,
+        details: rawMsg,
+      });
+
+      if (idx < chain.length - 1) {
+        options.onFallback?.({
+          failedModel: candidateModel,
+          nextModel: chain[idx + 1],
+          reason: rawMsg,
+          attempt: idx + 1,
+          total: chain.length,
+        });
+        continue;
+      }
+    } catch (err: any) {
+      if (err?.status === 401 || err?.status === 402 || err?.status === 403) throw err;
+      const errMsg = String(err?.message || err || 'Network error');
+      const status = Number(err?.status || 503);
+      errors.push({ model: candidateModel, status, message: errMsg });
+      addSystemLog({
+        level: 'warn',
+        category: 'network',
+        provider: 'huggingface',
+        model: candidateModel,
+        message: `Hugging Face Router fallback: ${candidateModel} threw error -> ${
+          idx < chain.length - 1 ? chain[idx + 1] : 'NO MORE BACKUPS'
+        }`,
+        details: errMsg,
+      });
+      if (idx < chain.length - 1) {
+        options.onFallback?.({
+          failedModel: candidateModel,
+          nextModel: chain[idx + 1],
+          reason: errMsg,
+          attempt: idx + 1,
+          total: chain.length,
+        });
+        continue;
+      }
+    }
+  }
+
+  const last = errors[errors.length - 1];
+  const summary = errors.map((e) => `${e.model} [${e.status}]`).join(' → ');
+  const finalErr = new Error(
+    `Hugging Face Router-এর সবকটি মডেল (${summary}) ফেইল বা রেট-লিমিট হয়েছে: ${last?.message || 'Unknown error'}`
+  );
+  (finalErr as any).status = last?.status || 502;
+  throw finalErr;
+}
+
 export interface SystemLogEntry {
   id: string;
   timestamp: number;
@@ -438,6 +606,8 @@ const SECRETS_FILE = path.resolve(process.cwd(), '.secrets.json');
 
 export function getOpenAICompatibleEndpoint(provider: string, baseUrl?: string): string {
   if (provider === 'openrouter') return 'https://openrouter.ai/api/v1/chat/completions';
+  if (provider === 'huggingface') return 'https://router.huggingface.co/v1/chat/completions';
+  if (provider === 'deepseek') return 'https://api.deepseek.com/v1/chat/completions';
   if (provider === 'groq') return 'https://api.groq.com/openai/v1/chat/completions';
   if (provider === 'cerebras') return 'https://api.cerebras.ai/v1/chat/completions';
   if (provider === 'mistral') return 'https://api.mistral.ai/v1/chat/completions';
@@ -472,6 +642,20 @@ export async function fetchLiveProviderModels(
       { id: 'meta-llama/llama-3.3-70b-instruct:free', label: 'Llama 3.3 70B Instruct (:free)', badge: 'Free · 70B' },
       { id: 'google/gemma-3-27b-it:free', label: 'Gemma 3 27B (:free)', badge: 'Free · Google' },
       { id: 'mistralai/mistral-small-3.1-24b-instruct:free', label: 'Mistral Small 3.1 24B (:free)', badge: 'Free · Fast' },
+    ],
+    huggingface: [
+      { id: 'Qwen/Qwen2.5-Coder-32B-Instruct', label: 'Qwen 2.5 Coder 32B Instruct', badge: 'Primary · Coding' },
+      { id: 'deepseek-ai/DeepSeek-V3-0324', label: 'DeepSeek V3 0324 (HF Free Router)', badge: 'Fallback 2 · V3' },
+      { id: 'deepseek-ai/DeepSeek-R1', label: 'DeepSeek R1 (HF Free Router)', badge: 'Fallback 3 · Reasoning' },
+      { id: 'meta-llama/Llama-3.3-70B-Instruct', label: 'Llama 3.3 70B Instruct', badge: 'Fallback 4 · 70B' },
+      { id: 'Qwen/Qwen2.5-72B-Instruct', label: 'Qwen 2.5 72B Instruct', badge: 'Free · 72B' },
+      { id: 'Qwen/Qwen3-Coder-30B-A3B-Instruct', label: 'Qwen3 Coder 30B', badge: 'Free · Coding' },
+      { id: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B (HF Router)', badge: 'Free · 120B' },
+      { id: 'Qwen/Qwen2.5-7B-Instruct', label: 'Qwen 2.5 7B Instruct', badge: 'Free · Fast' },
+    ],
+    deepseek: [
+      { id: 'deepseek-chat', label: 'DeepSeek Chat (V3)', badge: 'Coding · Tool Calling' },
+      { id: 'deepseek-reasoner', label: 'DeepSeek Reasoner (R1)', badge: 'Deep Reasoning' },
     ],
     groq: [
       { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B Versatile', badge: 'Free · Coding' },
@@ -524,6 +708,29 @@ export async function fetchLiveProviderModels(
             : [{ id: 'openrouter/free', label: 'OpenRouter Free Auto-Router', badge: 'Free · Auto' }, ...freeModels];
         }
       }
+    } else if (provider === 'huggingface') {
+      const res = await fetch('https://router.huggingface.co/v1/models', {
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        const rawModels: any[] = json.data || [];
+        const priorityRegex = /(qwen|deepseek|llama|gemma|mistral|gpt-oss|coder|devstral)/i;
+        const prioritized = [
+          ...rawModels.filter(m => priorityRegex.test(String(m.id || ''))),
+          ...rawModels.filter(m => !priorityRegex.test(String(m.id || ''))),
+        ];
+        const hfModels = prioritized
+          .filter(m => Boolean(m?.id))
+          .slice(0, 45)
+          .map(m => ({
+            id: String(m.id),
+            label: String(m.id).split('/').pop() || String(m.id),
+            badge: 'HF Router · Live',
+          }));
+        if (hfModels.length > 0) return hfModels;
+      }
     } else if (provider === 'gemini' && apiKey) {
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`, {
         signal: AbortSignal.timeout(8000),
@@ -540,7 +747,7 @@ export async function fetchLiveProviderModels(
           .slice(0, 25);
         if (live.length > 0) return live;
       }
-    } else if (['groq', 'cerebras', 'mistral', 'grok', 'custom'].includes(provider) && apiKey) {
+    } else if (['deepseek', 'groq', 'cerebras', 'mistral', 'grok', 'custom'].includes(provider) && apiKey) {
       const chatUrl = getOpenAICompatibleEndpoint(provider, baseUrl);
       const modelsUrl = chatUrl.replace(/\/chat\/completions$/, '/models');
       const res = await fetch(modelsUrl, {
@@ -550,7 +757,16 @@ export async function fetchLiveProviderModels(
       if (res.ok) {
         const json = await res.json();
         const list = (json.data || [])
-          .map((m: any) => ({ id: m.id, label: m.id, badge: `Live · ${provider}` }))
+          .map((m: any) => ({
+            id: m.id,
+            label:
+              provider === 'deepseek' && m.id === 'deepseek-chat'
+                ? 'DeepSeek Chat (V3)'
+                : provider === 'deepseek' && m.id === 'deepseek-reasoner'
+                  ? 'DeepSeek Reasoner (R1)'
+                  : m.id,
+            badge: `Live · ${provider}`,
+          }))
           .slice(0, 35);
         if (list.length > 0) return list;
       }
@@ -598,6 +814,19 @@ export function normalizeModelName(provider: string, model?: string): string {
       return 'cohere/north-mini-code:free';
     }
     return model.trim();
+  }
+  if (provider === 'huggingface') {
+    if (!model || model.trim() === '') {
+      return 'Qwen/Qwen2.5-Coder-32B-Instruct';
+    }
+    return model.trim().replace(/^hf:/i, '');
+  }
+  if (provider === 'deepseek') {
+    const clean = (model || '').trim();
+    if (!clean) return 'deepseek-chat';
+    if (clean === 'deepseek-reasoner' || /deepseek-r1/i.test(clean)) return 'deepseek-reasoner';
+    if (/deepseek-v3|deepseek-chat/i.test(clean)) return 'deepseek-chat';
+    return clean;
   }
   if (provider === 'groq') {
     if (!model || model.trim() === '') return 'llama-3.3-70b-versatile';
@@ -1035,7 +1264,20 @@ export async function testApiKey(
       return { success: true, latencyMs, message: `Connected to OPENROUTER (${connectedModel}) in ${latencyMs}ms.` };
     }
 
-    if (['groq', 'cerebras', 'mistral', 'grok', 'custom'].includes(provider)) {
+    if (provider === 'huggingface') {
+      const targetModel = normalizeModelName(provider, model);
+      const { model: connectedModel } = await fetchHuggingFaceWithFallback({
+        apiKey,
+        preferredModel: targetModel,
+        messages: [{ role: 'user', content: 'Reply with one word: OK' }],
+        max_tokens: 10,
+        timeoutMs: 25000,
+      });
+      const latencyMs = Date.now() - start;
+      return { success: true, latencyMs, message: `Connected to HUGGINGFACE ROUTER (${connectedModel}) in ${latencyMs}ms.` };
+    }
+
+    if (['deepseek', 'groq', 'cerebras', 'mistral', 'grok', 'custom'].includes(provider)) {
       const targetModel = normalizeModelName(provider, model);
       const endpoint = getOpenAICompatibleEndpoint(provider, baseUrl);
       const res = await fetch(endpoint, {
@@ -1047,13 +1289,20 @@ export async function testApiKey(
         body: JSON.stringify({
           model: targetModel,
           messages: [{ role: 'user', content: 'Reply with one word: OK' }],
-          max_tokens: 10,
+          max_tokens: targetModel === 'deepseek-reasoner' ? 64 : 10,
         }),
       });
       const latencyMs = Date.now() - start;
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
         const rawMsg = errorData.error?.message || `${provider} returned status ${res.status}`;
+        if (provider === 'deepseek' && res.status === 402) {
+          return {
+            success: false,
+            latencyMs,
+            message: `DeepSeek API অ্যাকাউন্টে পর্যাপ্ত ব্যালেন্স নেই (402 Insufficient Balance): ${rawMsg} — ফ্রিতে DeepSeek চালাতে OpenRouter (:free) অথবা Hugging Face Router (hf_...) ব্যবহার করুন।`,
+          };
+        }
         return { success: false, latencyMs, message: rawMsg };
       }
       return { success: true, latencyMs, message: `Connected to ${provider.toUpperCase()} (${targetModel}) in ${latencyMs}ms.` };
@@ -1753,6 +2002,12 @@ function extractAndStripTextToolCalls(rawText: string): {
     }
   }
 
+  // Clean up <think>...</think> blocks emitted by R1/reasoning models if real output or tool calls exist outside
+  const withoutThink = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  if (withoutThink || calls.length > 0) {
+    cleaned = withoutThink;
+  }
+
   // Clean up stray backtick artifacts left behind when models wrap tool JSON weirdly
   cleaned = cleaned
     .replace(/(?:^|\n)\s*`{1,3}\s*(?=\n|$)/g, '\n')
@@ -1764,8 +2019,17 @@ function extractAndStripTextToolCalls(rawText: string): {
 }
 
 function getSafeStreamableText(rawText: string): string {
-  // Prevent partial <tool_call> or ```json { "tool_calls" ... from flashing in UI while streaming
+  // Prevent partial <tool_call>, <think>, or ```json { "tool_calls" ... from flashing in UI while streaming
   let safe = rawText;
+  const openThinkIdx = safe.search(/<think>/i);
+  if (openThinkIdx !== -1) {
+    const closeThinkIdx = safe.search(/<\/think>/i);
+    if (closeThinkIdx === -1) {
+      safe = safe.slice(0, openThinkIdx);
+    } else {
+      safe = safe.replace(/<think>[\s\S]*?<\/think>/gi, '');
+    }
+  }
   const openTagIdx = safe.search(/<(?:tool_call|function_call)/i);
   if (openTagIdx !== -1 && !/<\/(?:tool_call|function_call)>/i.test(safe.slice(openTagIdx))) {
     safe = safe.slice(0, openTagIdx);
@@ -2507,11 +2771,25 @@ async function streamOpenAICompatible(
   let activeEndpoint = endpoint;
   let activeApiKey = apiKey;
   let activeHeaders = headers;
+  let activePreferredModel = model;
+  const initialProvider =
+    activeKeyObj?.provider ||
+    (activeEndpoint.includes('openrouter.ai')
+      ? 'openrouter'
+      : activeEndpoint.includes('router.huggingface.co')
+        ? 'huggingface'
+        : activeEndpoint.includes('api.deepseek.com')
+          ? 'deepseek'
+          : 'custom');
   let targetModel =
-    (activeKeyObj?.provider === 'openrouter' || activeEndpoint.includes('openrouter.ai'))
+    initialProvider === 'openrouter'
       ? getOpenRouterModelChain(model)[0]
-      : model;
-  if (activeKeyObj && activeKeyObj.provider !== 'openrouter' && isModelInOutage(activeKeyObj.provider, targetModel)) {
+      : initialProvider === 'huggingface'
+        ? getHuggingFaceModelChain(model)[0]
+        : initialProvider === 'deepseek'
+          ? getDeepSeekModelChain(model)[0]
+          : model;
+  if (activeKeyObj && !['openrouter', 'huggingface', 'deepseek'].includes(activeKeyObj.provider) && isModelInOutage(activeKeyObj.provider, targetModel)) {
     const chain = getProviderModelChain(activeKeyObj.provider, targetModel);
     if (chain.length > 0) targetModel = chain[0];
   }
@@ -2567,7 +2845,7 @@ async function streamOpenAICompatible(
       const openAiPoolCandidates = poolKeys.filter(k =>
         k.isActive &&
         k.id !== activeKeyObj!.id &&
-        ['openrouter', 'groq', 'cerebras', 'mistral', 'grok', 'custom'].includes(k.provider) &&
+        ['openrouter', 'huggingface', 'deepseek', 'groq', 'cerebras', 'mistral', 'grok', 'custom'].includes(k.provider) &&
         getOrCreateStats(k.id).cooldownUntil <= Date.now()
       );
       if (openAiPoolCandidates.length > 0) {
@@ -2600,8 +2878,9 @@ async function streamOpenAICompatible(
             activeHeaders = nextKey.provider === 'openrouter'
               ? { 'HTTP-Referer': 'https://nexus-ai.local', 'X-Title': 'Nexus AI' }
               : {};
-            const nextChain = getProviderModelChain(nextKey.provider, normalizeModelName(nextKey.provider, nextKey.model));
-            targetModel = nextChain[0] || normalizeModelName(nextKey.provider, nextKey.model);
+            activePreferredModel = normalizeModelName(nextKey.provider, nextKey.model);
+            const nextChain = getProviderModelChain(nextKey.provider, activePreferredModel);
+            targetModel = nextChain[0] || activePreferredModel;
             if (switchedProvider) {
               // Ensure tool-history compatibility when collaborating across different OpenAI-compatible APIs
               const normalized = normalizeCrossProviderMessages(openAiMessages);
@@ -2637,23 +2916,35 @@ async function streamOpenAICompatible(
       return JSON.stringify(payload);
     };
 
-    const isOpenRouterCall =
-      activeKeyObj?.provider === 'openrouter' || activeEndpoint.includes('openrouter.ai');
+    const routerProvider: 'openrouter' | 'huggingface' | 'deepseek' | null =
+      activeKeyObj?.provider === 'openrouter' || activeEndpoint.includes('openrouter.ai')
+        ? 'openrouter'
+        : activeKeyObj?.provider === 'huggingface' || activeEndpoint.includes('router.huggingface.co')
+          ? 'huggingface'
+          : activeKeyObj?.provider === 'deepseek' || activeEndpoint.includes('api.deepseek.com')
+            ? 'deepseek'
+            : null;
+    const isRouterChainCall = routerProvider !== null;
 
     const getRoundModelChain = (): string[] => {
-      if (!isOpenRouterCall) return [targetModel];
-      if (round === 0) {
-        return getOpenRouterModelChain(model);
-      }
-      const chain = getOpenRouterModelChain(model);
-      const currentIdx = chain.indexOf(targetModel);
-      return currentIdx >= 0 ? chain.slice(currentIdx) : chain;
+      if (!routerProvider) return [targetModel];
+      const baseChain =
+        routerProvider === 'openrouter'
+          ? getOpenRouterModelChain(activePreferredModel)
+          : routerProvider === 'huggingface'
+            ? getHuggingFaceModelChain(activePreferredModel)
+            : getDeepSeekModelChain(activePreferredModel);
+      if (round === 0) return baseChain;
+      const currentIdx = baseChain.indexOf(targetModel);
+      return currentIdx >= 0 ? baseChain.slice(currentIdx) : baseChain;
     };
 
     const roundModelChain = getRoundModelChain();
     let roundText = '';
+    let roundReasoning = '';
+    let emittedReasoningStep = false;
     const toolCallsMap = new Map<number, { id: string; type: 'function'; function: { name: string; arguments: string } }>();
-    const openRouterModelErrors: Array<{ model: string; status: number; message: string }> = [];
+    const routerModelErrors: Array<{ model: string; status: number; message: string }> = [];
     let roundSucceeded = false;
     const roundLockKeyId = activeKeyObj?.id;
     acquireKeyInFlight(roundLockKeyId);
@@ -2664,27 +2955,30 @@ async function streamOpenAICompatible(
       const candidateModel = roundModelChain[modelIdx];
       targetModel = candidateModel;
       roundText = '';
+      roundReasoning = '';
+      emittedReasoningStep = false;
       toolCallsMap.clear();
 
-      if (isOpenRouterCall && (round === 0 || modelIdx > 0)) {
+      if (isRouterChainCall && (round === 0 || modelIdx > 0)) {
         sendEvent({
           type: 'key_active',
-          keyId: activeKeyObj?.id || 'openrouter',
-          keyName: activeKeyObj?.name || 'OpenRouter',
-          provider: activeKeyObj?.provider || 'openrouter',
+          keyId: activeKeyObj?.id || routerProvider || 'openrouter',
+          keyName: activeKeyObj?.name || (routerProvider === 'huggingface' ? 'Hugging Face Router' : routerProvider === 'deepseek' ? 'DeepSeek API' : 'OpenRouter'),
+          provider: activeKeyObj?.provider || routerProvider || 'openrouter',
           model: candidateModel,
           isCustomKey: true,
         });
       }
 
-      if (isOpenRouterCall && modelIdx > 0) {
-        const prevFail = openRouterModelErrors[openRouterModelErrors.length - 1];
-        const isUltimateBackup = candidateModel === 'openrouter/free';
+      if (isRouterChainCall && modelIdx > 0) {
+        const prevFail = routerModelErrors[routerModelErrors.length - 1];
+        const isUltimateBackup = routerProvider === 'openrouter' && candidateModel === 'openrouter/free';
+        const providerTitle = routerProvider === 'huggingface' ? 'Hugging Face Router' : routerProvider === 'deepseek' ? 'DeepSeek' : 'OpenRouter';
         sendEvent({
           type: 'action',
           action: isUltimateBackup
             ? `🛡️ ওপরের সব OpenRouter মডেল ফেইল/রেট-লিমিট হয়েছে — আল্টিমেট ব্যাকআপ "openrouter/free" সিলেক্ট করে রিকোয়েস্ট পাঠানো হচ্ছে...`
-            : `🔄 "${prevFail?.model || 'Previous model'}" ফেইল করেছে (${prevFail?.status || 'ERR'}) — পরবর্তী ফলব্যাক মডেল "${candidateModel}" ট্রাই করা হচ্ছে...`,
+            : `🔄 ${providerTitle}: "${prevFail?.model || 'Previous model'}" ফেইল করেছে (${prevFail?.status || 'ERR'}) — পরবর্তী ফলব্যাক মডেল "${candidateModel}" ট্রাই করা হচ্ছে...`,
         });
       }
 
@@ -2717,15 +3011,15 @@ async function streamOpenAICompatible(
       if (fetchNetworkError) {
         if (signal?.aborted) throw new JobCancelledError();
         const netMsg = String(fetchNetworkError?.message || fetchNetworkError || 'Network error');
-        if (isOpenRouterCall) {
-          openRouterModelErrors.push({ model: candidateModel, status: 503, message: netMsg });
+        if (isRouterChainCall) {
+          routerModelErrors.push({ model: candidateModel, status: 503, message: netMsg });
           addSystemLog({
             level: 'warn',
             category: 'network',
             keyName: activeKeyObj?.name,
-            provider: 'openrouter',
+            provider: routerProvider || 'openrouter',
             model: candidateModel,
-            message: `OpenRouter network error on ${candidateModel}: ${netMsg.slice(0, 120)}`,
+            message: `${routerProvider} network error on ${candidateModel}: ${netMsg.slice(0, 120)}`,
           });
           if (modelIdx < roundModelChain.length - 1) continue;
           break;
@@ -2735,13 +3029,23 @@ async function streamOpenAICompatible(
 
       if (res && !res.ok) {
         const errorJson = await res.json().catch(() => null);
-        const msg = errorJson?.error?.message || `API error ${res.status}: ${res.statusText}`;
+        const msg =
+          (typeof errorJson?.error === 'string' ? errorJson.error : errorJson?.error?.message) ||
+          errorJson?.message ||
+          `API error ${res.status}: ${res.statusText}`;
 
         // Invalid/expired API key cannot succeed on fallback models
-        if (res.status === 401 || /User not found|Invalid API key|Unauthorized/i.test(msg)) {
+        if (res.status === 401 || (res.status === 403 && routerProvider === 'huggingface') || /User not found|Invalid API key|Unauthorized|Invalid credentials|sufficient permissions/i.test(msg)) {
           const authErr = new Error(msg);
-          (authErr as any).status = 401;
+          (authErr as any).status = res.status === 403 ? 403 : 401;
           throw authErr;
+        }
+
+        // Account credits depleted (402) affects the key across all models — fail fast so another key can take over
+        if (res.status === 402 || /insufficient balance|exceeded.*monthly.*credits/i.test(msg)) {
+          const creditErr = new Error(msg);
+          (creditErr as any).status = 402;
+          throw creditErr;
         }
 
         const isToolsUnsupported =
@@ -2811,7 +3115,7 @@ The server will execute it immediately and send back the result so you can conti
             action: `⚡ ${candidateModel} switched to structured <tool_call> execution protocol...`
           });
           res = await sendRequest(candidateModel, false, compactedMessages).catch(() => null);
-        } else if (!isOpenRouterCall && slugMatch && slugMatch[1] && slugMatch[1] !== targetModel) {
+        } else if (!isRouterChainCall && slugMatch && slugMatch[1] && slugMatch[1] !== targetModel) {
           if (activeKeyObj) markModelOutage(activeKeyObj.provider, targetModel, 600);
           targetModel = slugMatch[1];
           sendEvent({
@@ -2820,7 +3124,7 @@ The server will execute it immediately and send back the result so you can conti
           });
           res = await sendRequest(targetModel, toolsEnabled).catch(() => null);
         } else if (
-          !isOpenRouterCall &&
+          !isRouterChainCall &&
           !/free-models-per-day/i.test(msg) &&
           res.status !== 401 &&
           res.status !== 429 &&
@@ -2843,24 +3147,36 @@ The server will execute it immediately and send back the result so you can conti
         throwIfAborted(signal);
         if (!res || !res.ok) {
           const retryErrorJson = res ? await res.json().catch(() => null) : null;
-          const finalErrMsg = retryErrorJson?.error?.message || msg;
+          const finalErrMsg =
+            (typeof retryErrorJson?.error === 'string' ? retryErrorJson.error : retryErrorJson?.error?.message) ||
+            retryErrorJson?.message ||
+            msg;
           const finalStatus = res?.status || 503;
 
-          if (finalStatus === 401 || /User not found|Invalid API key|Unauthorized/i.test(finalErrMsg)) {
+          if (finalStatus === 401 || (finalStatus === 403 && routerProvider === 'huggingface') || /User not found|Invalid API key|Unauthorized|Invalid credentials|sufficient permissions/i.test(finalErrMsg)) {
             const authErr = new Error(finalErrMsg);
-            (authErr as any).status = 401;
+            (authErr as any).status = finalStatus === 403 ? 403 : 401;
             throw authErr;
           }
 
-          if (isOpenRouterCall) {
-            openRouterModelErrors.push({ model: candidateModel, status: finalStatus, message: finalErrMsg });
+          if (finalStatus === 402 || /insufficient balance|exceeded.*monthly.*credits/i.test(finalErrMsg)) {
+            const creditErr = new Error(finalErrMsg);
+            (creditErr as any).status = 402;
+            throw creditErr;
+          }
+
+          if (isRouterChainCall) {
+            routerModelErrors.push({ model: candidateModel, status: finalStatus, message: finalErrMsg });
+            if (activeKeyObj && [400, 404, 502, 503].includes(finalStatus)) {
+              markModelOutage(routerProvider || activeKeyObj.provider, candidateModel, 300);
+            }
             addSystemLog({
               level: 'warn',
               category: finalStatus === 429 ? 'rate_limit' : 'rotation',
               keyName: activeKeyObj?.name,
-              provider: 'openrouter',
+              provider: routerProvider || 'openrouter',
               model: candidateModel,
-              message: `OpenRouter model failed (${finalStatus}): ${candidateModel} — ${finalErrMsg.slice(0, 120)}`,
+              message: `${routerProvider} model failed (${finalStatus}): ${candidateModel} — ${finalErrMsg.slice(0, 120)}`,
             });
             if (modelIdx < roundModelChain.length - 1) {
               continue;
@@ -2868,7 +3184,7 @@ The server will execute it immediately and send back the result so you can conti
             break;
           }
 
-          // Non-OpenRouter inline hot-swap on mid-loop 429/502/503
+          // Non-Router inline hot-swap on mid-loop 429/502/503
           if (res && (res.status === 429 || res.status === 502 || res.status === 503) && inlineHotSwaps < 12 && poolKeys.length > 1 && activeKeyObj) {
             const swapCooldown = /free-models-per-day/i.test(finalErrMsg) ? 1800 : res.status === 429 ? 60 : 15;
             recordKeyCooldown(activeKeyObj.id, swapCooldown, finalErrMsg);
@@ -2876,7 +3192,7 @@ The server will execute it immediately and send back the result so you can conti
             const eligibleSwapKeys = poolKeys.filter(k =>
               k.isActive &&
               k.id !== activeKeyObj!.id &&
-              ['openrouter', 'groq', 'cerebras', 'mistral', 'grok', 'custom'].includes(k.provider) &&
+              ['openrouter', 'huggingface', 'deepseek', 'groq', 'cerebras', 'mistral', 'grok', 'custom'].includes(k.provider) &&
               getOrCreateStats(k.id).cooldownUntil <= Date.now()
             );
             const { key: swapKey } = selectBestKey(eligibleSwapKeys, 'all', new Set(), null, { loadBalance: true });
@@ -2889,8 +3205,9 @@ The server will execute it immediately and send back the result so you can conti
               activeHeaders = swapKey.provider === 'openrouter'
                 ? { 'HTTP-Referer': 'https://nexus-ai.local', 'X-Title': 'Nexus AI' }
                 : {};
-              const chain = getProviderModelChain(swapKey.provider, normalizeModelName(swapKey.provider, swapKey.model));
-              targetModel = chain[0] || normalizeModelName(swapKey.provider, swapKey.model);
+              activePreferredModel = normalizeModelName(swapKey.provider, swapKey.model);
+              const chain = getProviderModelChain(swapKey.provider, activePreferredModel);
+              targetModel = chain[0] || activePreferredModel;
               if (swapKey.provider !== prevProvider) {
                 const normalized = normalizeCrossProviderMessages(openAiMessages);
                 openAiMessages.length = 0;
@@ -2935,8 +3252,8 @@ The server will execute it immediately and send back the result so you can conti
 
       throwIfAborted(signal);
       if (!res) {
-        if (isOpenRouterCall) {
-          openRouterModelErrors.push({ model: candidateModel, status: 503, message: 'No HTTP response received' });
+        if (isRouterChainCall) {
+          routerModelErrors.push({ model: candidateModel, status: 503, message: 'No HTTP response received' });
           if (modelIdx < roundModelChain.length - 1) continue;
           break;
         }
@@ -2945,8 +3262,8 @@ The server will execute it immediately and send back the result so you can conti
 
       const reader = res.body?.getReader();
       if (!reader) {
-        if (isOpenRouterCall) {
-          openRouterModelErrors.push({ model: candidateModel, status: 502, message: 'No response stream available' });
+        if (isRouterChainCall) {
+          routerModelErrors.push({ model: candidateModel, status: 502, message: 'No response stream available' });
           if (modelIdx < roundModelChain.length - 1) continue;
           break;
         }
@@ -2994,6 +3311,17 @@ The server will execute it immediately and send back the result so you can conti
             const choiceDelta = json.choices?.[0]?.delta;
             if (!choiceDelta) continue;
 
+            if (typeof choiceDelta.reasoning_content === 'string' && choiceDelta.reasoning_content.length > 0) {
+              roundReasoning += choiceDelta.reasoning_content;
+              if (!emittedReasoningStep) {
+                emittedReasoningStep = true;
+                sendEvent({
+                  type: 'action',
+                  action: `🧠 ${candidateModel} যুক্তি বিশ্লেষণ করছে (Reasoning)...`,
+                });
+              }
+            }
+
             if (typeof choiceDelta.content === 'string' && choiceDelta.content.length > 0) {
               roundText += choiceDelta.content;
               const previewText = (committedText ? committedText + '\n\n' : '') + getSafeStreamableText(roundText);
@@ -3031,8 +3359,8 @@ The server will execute it immediately and send back the result so you can conti
           (authErr as any).status = 401;
           throw authErr;
         }
-        if (isOpenRouterCall) {
-          openRouterModelErrors.push({
+        if (isRouterChainCall) {
+          routerModelErrors.push({
             model: candidateModel,
             status: streamError.status,
             message: streamError.message,
@@ -3041,9 +3369,9 @@ The server will execute it immediately and send back the result so you can conti
             level: 'warn',
             category: streamError.status === 429 ? 'rate_limit' : 'rotation',
             keyName: activeKeyObj?.name,
-            provider: 'openrouter',
+            provider: routerProvider || 'openrouter',
             model: candidateModel,
-            message: `OpenRouter stream error on ${candidateModel} (${streamError.status}): ${streamError.message.slice(0, 120)}`,
+            message: `${routerProvider} stream error on ${candidateModel} (${streamError.status}): ${streamError.message.slice(0, 120)}`,
           });
           if (toolCallsMap.size === 0 && modelIdx < roundModelChain.length - 1) {
             continue;
@@ -3055,8 +3383,8 @@ The server will execute it immediately and send back the result so you can conti
         throw err;
       }
 
-      if (isOpenRouterCall && roundText.trim() === '' && toolCallsMap.size === 0) {
-        openRouterModelErrors.push({
+      if (isRouterChainCall && roundText.trim() === '' && toolCallsMap.size === 0) {
+        routerModelErrors.push({
           model: candidateModel,
           status: 502,
           message: 'Empty response stream from model',
@@ -3065,9 +3393,9 @@ The server will execute it immediately and send back the result so you can conti
           level: 'warn',
           category: 'rotation',
           keyName: activeKeyObj?.name,
-          provider: 'openrouter',
+          provider: routerProvider || 'openrouter',
           model: candidateModel,
-          message: `OpenRouter model ${candidateModel} returned an empty response — trying next fallback model.`,
+          message: `${routerProvider} model ${candidateModel} returned an empty response — trying next fallback model.`,
         });
         if (modelIdx < roundModelChain.length - 1) {
           continue;
@@ -3086,19 +3414,19 @@ The server will execute it immediately and send back the result so you can conti
     }
 
     if (!roundSucceeded) {
-      // If all OpenRouter models (including openrouter/free) failed, check if there is another key in poolKeys for hot-swap
-      const lastModelErr = openRouterModelErrors[openRouterModelErrors.length - 1];
-      if (isOpenRouterCall && inlineHotSwaps < 12 && poolKeys.length > 1 && activeKeyObj) {
+      // If all router models failed, check if there is another key in poolKeys for hot-swap
+      const lastModelErr = routerModelErrors[routerModelErrors.length - 1];
+      if (isRouterChainCall && inlineHotSwaps < 12 && poolKeys.length > 1 && activeKeyObj) {
         const swapCooldown = /free-models-per-day/i.test(lastModelErr?.message || '')
           ? 1800
           : lastModelErr?.status === 429
             ? 60
             : 15;
-        recordKeyCooldown(activeKeyObj.id, swapCooldown, lastModelErr?.message || 'All OpenRouter fallback models failed');
+        recordKeyCooldown(activeKeyObj.id, swapCooldown, lastModelErr?.message || `All ${routerProvider} fallback models failed`);
         const eligibleSwapKeys = poolKeys.filter(k =>
           k.isActive &&
           k.id !== activeKeyObj!.id &&
-          ['openrouter', 'groq', 'cerebras', 'mistral', 'grok', 'custom'].includes(k.provider) &&
+          ['openrouter', 'huggingface', 'deepseek', 'groq', 'cerebras', 'mistral', 'grok', 'custom'].includes(k.provider) &&
           getOrCreateStats(k.id).cooldownUntil <= Date.now()
         );
         const { key: swapKey } = selectBestKey(eligibleSwapKeys, 'all', new Set(), null, { loadBalance: true });
@@ -3111,8 +3439,9 @@ The server will execute it immediately and send back the result so you can conti
           activeHeaders = swapKey.provider === 'openrouter'
             ? { 'HTTP-Referer': 'https://nexus-ai.local', 'X-Title': 'Nexus AI' }
             : {};
-          const chain = getProviderModelChain(swapKey.provider, normalizeModelName(swapKey.provider, swapKey.model));
-          targetModel = chain[0] || normalizeModelName(swapKey.provider, swapKey.model);
+          activePreferredModel = normalizeModelName(swapKey.provider, swapKey.model);
+          const chain = getProviderModelChain(swapKey.provider, activePreferredModel);
+          targetModel = chain[0] || activePreferredModel;
           if (swapKey.provider !== prevProvider) {
             const normalized = normalizeCrossProviderMessages(openAiMessages);
             openAiMessages.length = 0;
@@ -3128,20 +3457,28 @@ The server will execute it immediately and send back the result so you can conti
           });
           sendEvent({
             type: 'action',
-            action: `⚡ All OpenRouter models failed on previous key — hot-swapping to ${swapKey.name} (${swapKey.provider.toUpperCase()} • ${targetModel})...`,
+            action: `⚡ All ${routerProvider} models failed on previous key — hot-swapping to ${swapKey.name} (${swapKey.provider.toUpperCase()} • ${targetModel})...`,
           });
           continue;
         }
       }
 
-      const summary = openRouterModelErrors
+      const summary = routerModelErrors
         .map((e) => `${e.model} [${e.status || 'ERR'}]`)
         .join(' → ');
+      const routerLabel =
+        routerProvider === 'huggingface'
+          ? 'Hugging Face Router'
+          : routerProvider === 'deepseek'
+            ? 'DeepSeek API'
+            : 'OpenRouter';
       const finalErr = new Error(
-        `OpenRouter-এর সবকটি ফলব্যাক মডেল (${summary || roundModelChain.join(' → ')}) ফেইল বা রেট-লিমিট হয়েছে। শেষ ব্যাকআপ "openrouter/free"-ও ব্যর্থ হয়েছে: ${lastModelErr?.message || 'Unknown error'}`
+        `${routerLabel}-এর সবকটি ফলব্যাক মডেল (${summary || roundModelChain.join(' → ')}) ফেইল বা রেট-লিমিট হয়েছে: ${lastModelErr?.message || 'Unknown error'}`
       );
       (finalErr as any).status = lastModelErr?.status || 502;
-      (finalErr as any).allOpenRouterModelsFailed = true;
+      if (routerProvider === 'openrouter') {
+        (finalErr as any).allOpenRouterModelsFailed = true;
+      }
       throw finalErr;
     }
 
@@ -3164,6 +3501,7 @@ The server will execute it immediately and send back the result so you can conti
       openAiMessages.push({
         role: 'assistant',
         content: roundText || null,
+        ...(roundReasoning ? { reasoning_content: roundReasoning } : {}),
         tool_calls: nativeCalls,
       });
 
@@ -3945,9 +4283,21 @@ export async function executeOrchestratedChat(
       multiAgent,
       sessionId,
     };
-    const explicitGeminiModel = selectedModel && selectedModel !== 'Default' && selectedModel !== 'auto'
-      ? normalizeModelName('gemini', selectedModel)
-      : null;
+    const explicitModelOverride: { provider: ApiProviderId; model: string } | null = (() => {
+      const clean = (selectedModel || '').trim();
+      if (!clean || clean === 'Default' || clean === 'auto') return null;
+      if (clean === 'deepseek-chat' || clean === 'deepseek-reasoner') {
+        return { provider: 'deepseek', model: clean };
+      }
+      if (clean === 'openrouter/free' || clean.endsWith(':free')) {
+        return { provider: 'openrouter', model: clean };
+      }
+      if (/^hf:/i.test(clean) || (clean.includes('/') && !clean.endsWith(':free') && !clean.startsWith('gemini-'))) {
+        return { provider: 'huggingface', model: clean.replace(/^hf:/i, '') };
+      }
+      return { provider: 'gemini', model: normalizeModelName('gemini', clean) };
+    })();
+    const explicitGeminiModel = explicitModelOverride?.provider === 'gemini' ? explicitModelOverride.model : null;
 
     // Extract and sanitize messages + multimodal vision images once
     const { history, lastMessage: initialLastMessage, lastMessageImages } = prepareGeminiHistoryAndLastMessage(messages);
@@ -4322,6 +4672,18 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
                 }), signal);
                 const txt = data?.choices?.[0]?.message?.content;
                 if (txt) return txt;
+              } else if (spareKey.provider === 'huggingface') {
+                const { data } = await raceWithAbort(fetchHuggingFaceWithFallback({
+                  apiKey: spareKey.apiKey,
+                  preferredModel: normalizeModelName('huggingface', spareKey.model),
+                  messages: [
+                    { role: 'system', content: sys },
+                    { role: 'user', content: usr },
+                  ],
+                  timeoutMs: 25000,
+                }), signal);
+                const txt = data?.choices?.[0]?.message?.content;
+                if (txt) return txt;
               } else {
                 const ep = getOpenAICompatibleEndpoint(spareKey.provider, spareKey.baseUrl);
                 const spareModel = getProviderModelChain(spareKey.provider, normalizeModelName(spareKey.provider, spareKey.model))[0]
@@ -4363,6 +4725,14 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
       };
     };
 
+    const effectivePreferredProvider =
+      preferredProvider === 'all' &&
+      explicitModelOverride &&
+      explicitModelOverride.provider !== 'gemini' &&
+      activePool.some((k) => k.isActive && k.provider === explicitModelOverride.provider)
+        ? explicitModelOverride.provider
+        : preferredProvider;
+
     while (attempts < maxAttempts && !succeeded) {
       throwIfAborted(signal);
       attempts++;
@@ -4370,7 +4740,7 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
       // Select the best key: enforces 80% RPM/TPM guard + role tiering + least-used rotation across 1..40+ keys
       const { key, reason: selectionReason, healthyCount } = selectBestKey(
         activePool,
-        preferredProvider,
+        effectivePreferredProvider,
         excludedKeyIds,
         reqStickyKeyId,
         {
@@ -4385,11 +4755,19 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
         if (selectionReason) {
           sendEvent({ type: "action", action: `🔑 ${selectionReason}: ${key.name}` });
         }
+        const matchedExplicitModel =
+          explicitModelOverride && explicitModelOverride.provider === key.provider
+            ? explicitModelOverride.model
+            : null;
         const activeModel = key.provider === 'gemini'
           ? (explicitGeminiModel || normalizeModelName('gemini', key.model))
           : key.provider === 'openrouter'
-            ? getOpenRouterModelChain(key.model)[0]
-            : (key.model || 'default');
+            ? getOpenRouterModelChain(matchedExplicitModel || key.model)[0]
+            : key.provider === 'huggingface'
+              ? getHuggingFaceModelChain(matchedExplicitModel || key.model)[0]
+              : key.provider === 'deepseek'
+                ? getDeepSeekModelChain(matchedExplicitModel || key.model)[0]
+                : (matchedExplicitModel || key.model || 'default');
         sendEvent({
           type: "key_active",
           keyId: key.id,
@@ -4576,10 +4954,15 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
             });
             succeeded = true;
             break;
-          } else if (['openrouter', 'groq', 'cerebras', 'mistral', 'grok', 'custom'].includes(key.provider)) {
+          } else if (['openrouter', 'huggingface', 'deepseek', 'groq', 'cerebras', 'mistral', 'grok', 'custom'].includes(key.provider)) {
+            const preferredForKey = matchedExplicitModel || key.model;
             const targetModel = key.provider === 'openrouter'
-              ? getOpenRouterModelChain(key.model)[0]
-              : normalizeModelName(key.provider, key.model);
+              ? getOpenRouterModelChain(preferredForKey)[0]
+              : key.provider === 'huggingface'
+                ? getHuggingFaceModelChain(preferredForKey)[0]
+                : key.provider === 'deepseek'
+                  ? getDeepSeekModelChain(preferredForKey)[0]
+                  : normalizeModelName(key.provider, preferredForKey);
             const endpoint = getOpenAICompatibleEndpoint(key.provider, key.baseUrl);
             const extraHeaders: Record<string, string> = key.provider === 'openrouter'
               ? { 'HTTP-Referer': 'https://nexus-ai.local', 'X-Title': 'Nexus AI' }
@@ -4590,6 +4973,18 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
                 throwIfAborted(signal);
                 if (key.provider === 'openrouter') {
                   const { data } = await raceWithAbort(fetchOpenRouterWithFallback({
+                    apiKey: key.apiKey,
+                    preferredModel: targetModel,
+                    messages: [
+                      { role: 'system', content: sys },
+                      { role: 'user', content: usr },
+                    ],
+                    timeoutMs: 25000,
+                  }), signal);
+                  return data?.choices?.[0]?.message?.content || '';
+                }
+                if (key.provider === 'huggingface') {
+                  const { data } = await raceWithAbort(fetchHuggingFaceWithFallback({
                     apiKey: key.apiKey,
                     preferredModel: targetModel,
                     messages: [
@@ -4692,12 +5087,12 @@ MANDATORY WEBSITE REPLICATION GUIDELINES:
           if (err?.allOpenRouterModelsFailed) {
             sawAllOpenRouterFailed = true;
           }
-          const isDailyFreeLimit = /free-models-per-day/i.test(errMsg);
+          const isDailyFreeLimit = /free-models-per-day|exceeded.*monthly.*credits|insufficient balance/i.test(errMsg) || err.status === 402;
           const is429 = err.status === 429 || errMsg.includes("429") || /quota|rate limit|free-models-per-day/i.test(errMsg);
           const is503 = err.status === 503 || err.status === 502 || /503|502|high demand|provider returned error|unavailable/i.test(errMsg);
           const is404Model = err.status === 404 || /not found|not supported for generateContent/i.test(errMsg);
           const isQuotaExceeded = is429 || /quota exceeded|resource_exhausted/i.test(errMsg);
-          const isAuthError = err.status === 401 || err.code === 401 || /401|API key not valid|UNAUTHENTICATED|User not found|ACCESS_TOKEN_TYPE_UNSUPPORTED/i.test(errMsg);
+          const isAuthError = err.status === 401 || (err.status === 403 && key.provider === 'huggingface') || err.code === 401 || /401|API key not valid|UNAUTHENTICATED|User not found|ACCESS_TOKEN_TYPE_UNSUPPORTED|Invalid credentials/i.test(errMsg);
 
           if (isDailyFreeLimit) sawDailyFreeLimit = true;
           if (isQuotaExceeded) sawRateLimit = true;
